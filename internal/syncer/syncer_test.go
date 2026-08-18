@@ -34,9 +34,12 @@ func (f *fakeSource) Positions(_ context.Context, query teslamate.Query) ([]tesl
 
 	var page []teslamate.Position
 	for _, position := range f.positions {
-		if position.Date.After(query.After) {
-			page = append(page, position)
+		afterPage := position.Date.After(query.After) ||
+			(position.Date.Equal(query.After) && position.ID > query.AfterID)
+		if !afterPage {
+			continue
 		}
+		page = append(page, position)
 		if len(page) == query.Limit {
 			break
 		}
@@ -202,29 +205,62 @@ func TestSyncOnceKeepsCursorWhenDawarichRejectsTheBatch(t *testing.T) {
 	}
 }
 
-func TestSyncOnceStopsWhenAFullPageCannotAdvanceTheCursor(t *testing.T) {
+func TestSyncOnceDrainsPositionsSharingOneTimestamp(t *testing.T) {
 	t.Parallel()
 
 	at := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
-	source := &fakeSource{positions: []teslamate.Position{{Date: at, CarName: "Model Y"}}}
+	positions := make([]teslamate.Position, 0, 5)
+	for i := range 5 {
+		positions = append(positions, teslamate.Position{ID: int64(i + 1), Date: at, CarName: "Model Y"})
+	}
+	source := &fakeSource{positions: positions}
 	syncer := newTestSyncer(source, &fakeSink{}, &memoryCursor{at: at}, Options{
-		BatchSize:     1,
+		BatchSize:     2,
 		OverlapWindow: time.Minute,
 	})
 
-	done := make(chan error, 1)
+	done := make(chan int, 1)
 	go func() {
-		_, err := syncer.SyncOnce(context.Background())
-		done <- err
+		synced, err := syncer.SyncOnce(context.Background())
+		if err != nil {
+			t.Errorf("SyncOnce: %v", err)
+		}
+		done <- synced
 	}()
 
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("SyncOnce: %v", err)
+	case synced := <-done:
+		if synced != len(positions) {
+			t.Errorf("synced = %d, want %d", synced, len(positions))
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("SyncOnce did not return")
+	}
+}
+
+func TestSyncOncePagesByIDWithinOneTimestamp(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
+	source := &fakeSource{positions: []teslamate.Position{
+		{ID: 1, Date: at, CarName: "Model Y"},
+		{ID: 2, Date: at, CarName: "Model Y"},
+	}}
+	syncer := newTestSyncer(source, &fakeSink{}, &memoryCursor{at: at}, Options{BatchSize: 1})
+
+	if _, err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("SyncOnce: %v", err)
+	}
+
+	source.mu.Lock()
+	queries := append([]teslamate.Query(nil), source.queries...)
+	source.mu.Unlock()
+
+	if len(queries) < 2 {
+		t.Fatalf("queries = %d, want at least 2", len(queries))
+	}
+	if queries[1].AfterID != 1 {
+		t.Errorf("second query AfterID = %d, want 1", queries[1].AfterID)
 	}
 }
 

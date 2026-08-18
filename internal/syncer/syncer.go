@@ -85,14 +85,16 @@ func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
+	page := teslamate.Query{
+		After:      cursor.Add(-s.opts.OverlapWindow),
+		CarIDs:     s.opts.CarIDs,
+		DrivesOnly: s.opts.DrivesOnly,
+		Limit:      s.opts.BatchSize,
+	}
+
 	sent := 0
 	for {
-		positions, err := s.source.Positions(ctx, teslamate.Query{
-			After:      cursor.Add(-s.opts.OverlapWindow),
-			CarIDs:     s.opts.CarIDs,
-			DrivesOnly: s.opts.DrivesOnly,
-			Limit:      s.opts.BatchSize,
-		})
+		positions, err := s.source.Positions(ctx, page)
 		if err != nil {
 			return sent, err
 		}
@@ -109,17 +111,16 @@ func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
 		}
 		sent += len(points)
 
-		newest := positions[len(positions)-1].Date
-		if err := s.cursor.Save(newest); err != nil {
+		last := positions[len(positions)-1]
+		if err := s.cursor.Save(last.Date); err != nil {
 			return sent, fmt.Errorf("save cursor: %w", err)
 		}
-		s.logger.Debug("batch synced", "points", len(points), "through", newest)
+		s.logger.Debug("batch synced", "points", len(points), "through", last.Date)
 
-		pageWasPartial := len(positions) < s.opts.BatchSize
-		if pageWasPartial || !newest.After(cursor) {
+		if len(positions) < s.opts.BatchSize {
 			return sent, nil
 		}
-		cursor = newest
+		page.After, page.AfterID = last.Date, last.ID
 	}
 }
 

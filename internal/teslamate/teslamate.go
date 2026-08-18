@@ -26,6 +26,7 @@ type Position struct {
 
 type Query struct {
 	After      time.Time
+	AfterID    int64
 	CarIDs     []int32
 	DrivesOnly bool
 	Limit      int
@@ -75,7 +76,7 @@ SELECT p.id,
        p.drive_id
 FROM positions p
 JOIN cars c ON c.id = p.car_id
-WHERE p.date > $1::timestamp
+WHERE (p.date > $1::timestamp OR (p.date = $1::timestamp AND p.id > $5))
   AND p.latitude IS NOT NULL
   AND p.longitude IS NOT NULL
   AND (cardinality($2::int[]) = 0 OR p.car_id = ANY($2::int[]))
@@ -89,7 +90,8 @@ func (s *Store) Positions(ctx context.Context, query Query) ([]Position, error) 
 		carIDs = []int32{}
 	}
 
-	rows, err := s.pool.Query(ctx, positionsSQL, query.After.UTC(), carIDs, query.DrivesOnly, query.Limit)
+	rows, err := s.pool.Query(ctx, positionsSQL,
+		query.After.UTC(), carIDs, query.DrivesOnly, query.Limit, query.AfterID)
 	if err != nil {
 		return nil, fmt.Errorf("query positions: %w", err)
 	}
