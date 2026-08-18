@@ -1,0 +1,9 @@
+/teslamate-dawarich
+/dist/
+.env
+*.tmp
+bookmark.json
+.DS_Store
+
+# Release
+.release.env
