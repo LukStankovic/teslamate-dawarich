@@ -73,6 +73,10 @@ volumes:
   teslamate-dawarich-data:
 ```
 
+Keep it a named volume. The container runs as a non-root user, and a named
+volume inherits `/data`'s ownership from the image; a bind mount to a host
+directory does not, so the cursor could not be written.
+
 Wire it to Dawarich as described below, then start it:
 
 ```sh
@@ -184,6 +188,51 @@ backfilling. Deleting an import removes its points, which avoids two slightly
 different copies of the same drive — GPX rounds coordinates and timestamps, so
 those points would not deduplicate against these ones.
 
+## Checking that it works
+
+```sh
+docker compose logs --tail 50 teslamate-dawarich
+```
+
+A pass that sent something logs `sync pass complete points=N`. Silence is not a
+failure: with the defaults the first pass only covers the last 24 hours of
+drives, so a day without driving has nothing to send. To see every query, run
+one pass verbosely:
+
+```sh
+docker compose run --rm -e LOG_LEVEL=debug teslamate-dawarich -once
+```
+
+The cursor shows how far the sync has got:
+
+```sh
+docker compose exec teslamate-dawarich cat /data/bookmark.json
+```
+
+Dawarich itself is the final word. Points carry the car name as `tracker_id`,
+which distinguishes them from a phone or an earlier GPX import:
+
+```sh
+curl -s "https://dawarich.example.com/api/v1/points?api_key=KEY&start_at=2026-08-01&end_at=2026-08-19&per_page=5&order=desc"
+```
+
+`start_at` and `end_at` accept an ISO date or a Unix timestamp, and the response
+headers carry `X-Total-Pages`. On the map, a drive appears as a track once
+Sidekiq has processed the new points, a few seconds behind the insert.
+
+To confirm a backfill covered everything, compare its `points=N` with what
+TeslaMate holds:
+
+```sh
+docker compose exec -T database psql -U teslamate -d teslamate -c \
+"SELECT count(*), min(date), max(date) FROM positions
+ WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND drive_id IS NOT NULL;"
+```
+
+`N` runs a few percent above that count, because each page re-reads the overlap
+window and Dawarich discards what it already has. `N` below the count means
+something did not arrive.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -241,6 +290,18 @@ make test   # go test -race ./...
 make lint   # golangci-lint
 make build
 ```
+
+## Releasing
+
+Tagging is the trigger. `make version` prints the next patch, minor and major
+version; `make release-patch`, `-minor` or `-major` runs the tests, tags, pushes,
+writes the GitHub release and appends its notes to `CHANGELOG.md`. The tag starts
+the release workflow, which builds the multi-arch image and pushes it to Docker
+Hub and ghcr — around six minutes, most of it arm64 under emulation.
+
+The workflow needs `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` as repository
+secrets. The Docker Hub repository does not need to exist beforehand; the first
+push creates it.
 
 ## License
 
