@@ -7,6 +7,13 @@ whole driving history in one command.
 A single Go binary. No queue, no broker requirement, no state beyond one small
 cursor file.
 
+- [How it works](#how-it-works)
+- [Setup](#setup) — [reaching Dawarich](#reaching-dawarich), [HTTPS](#if-dawarich-forces-https), [API key](#where-the-api-key-lives)
+- [Choosing what gets synced](#choosing-what-gets-synced) — from now on, from a date, or the whole history
+- [Checking that it works](#checking-that-it-works)
+- [Configuration](#configuration) and [flags](#flags)
+- [What ends up in Dawarich](#what-ends-up-in-dawarich)
+
 ## How it works
 
 TeslaMate already records every position it gets from the car in its Postgres
@@ -166,40 +173,71 @@ In Dawarich: user menu → **Settings** → API key (the same key `/api-docs`
 refers to). Generating a new one there invalidates the old one, so update the
 environment if you regenerate it.
 
-## Backfilling history
+## Choosing what gets synced
 
-Stop the running service first: both containers share `/data`, and they would
-overwrite each other's cursor.
+Two settings decide it, and they are independent:
+
+| | controls | where |
+| --- | --- | --- |
+| time range | how far back to start | `INITIAL_LOOKBACK`, or the `-from` / `-full` flags |
+| position kind | drives only, or parked and charging too | `DRIVES_ONLY` |
+
+`DRIVES_ONLY=true` is the default and worth keeping: a parked car keeps producing
+near-identical positions, which bloats Dawarich and skews its visit detection.
+
+### From now on
+
+```yaml
+      INITIAL_LOOKBACK: 0
+```
+
+The first pass starts at the current time, so only new drives arrive.
+
+### The last day (default)
+
+`INITIAL_LOOKBACK=24h`. Anything driven in the last 24 hours is picked up on the
+first pass, everything older is ignored.
+
+### From a given date, or everything
+
+Stop the service first: both containers share `/data` and would overwrite each
+other's cursor.
 
 ```sh
 docker compose stop teslamate-dawarich
-docker compose run --rm teslamate-dawarich -full -once      # or -from 2024-01-01
+docker compose run --rm teslamate-dawarich -from 2024-01-01 -once
 docker compose up -d teslamate-dawarich
 ```
 
-`-full` and `-from` set the time range only. Which positions are synced stays
-with `DRIVES_ONLY`.
+Swap `-from 2024-01-01` for `-full` to take everything TeslaMate ever recorded.
+Both rewrite the cursor, so the service carries on from where the backfill ended.
+Re-running either is harmless — Dawarich deduplicates, so nothing doubles.
 
-Both rewrite the stored cursor, so the daemon carries on from the end of the
-backfill afterwards. Re-running a backfill is harmless.
+### How long a full history takes
 
-### Large histories
+Expect roughly a thousand points per second, so a million positions is about a
+quarter of an hour. Progress is logged every 10,000 points:
 
-A backfill sends `BATCH_SIZE` points per request and logs its progress every
-10,000 points. Millions of positions therefore take a while, and the cursor is
-saved after every accepted batch, so an interrupted run resumes where it stopped
-rather than starting over.
+```
+level=INFO msg="sync in progress" points=590000 through=2025-02-05T15:21:54Z
+```
 
-Dawarich is the slower half: each batch queues anomaly detection, track and visit
-recalculation. Those jobs keep running long after the last point arrived. Watch
-them at `/sidekiq`, and consider raising `BACKGROUND_PROCESSING_CONCURRENCY` for
-the duration — it defaults to 3, and the queue is what decides when the map is
-complete.
+The cursor is saved after every accepted batch, so an interrupted run resumes
+where it stopped rather than starting over.
 
-Already imported some drives as GPX? Delete that import in Dawarich before
-backfilling. Deleting an import removes its points, which avoids two slightly
-different copies of the same drive — GPX rounds coordinates and timestamps, so
-those points would not deduplicate against these ones.
+Dawarich is the slower half. Each batch queues anomaly detection, track and visit
+recalculation, and those jobs keep running long after the last point arrived —
+that queue, not the import, decides when the map is complete. Watch it at
+`/sidekiq` and consider raising `BACKGROUND_PROCESSING_CONCURRENCY` (default 3)
+for the duration.
+
+### If you already imported GPX by hand
+
+Delete that import in Dawarich first. Deleting an import removes its points, and
+that avoids two slightly different copies of the same drive: GPX rounds
+coordinates and timestamps, so those points do not deduplicate against these
+ones. Keep the GPX only if it covers a period TeslaMate never recorded, and then
+start the backfill after that date with `-from`.
 
 ## Checking that it works
 
