@@ -28,10 +28,11 @@ type Point struct {
 }
 
 type Client struct {
-	baseURL string
-	apiKey  string
-	http    *http.Client
-	logger  *slog.Logger
+	baseURL        string
+	apiKey         string
+	forwardedProto string
+	http           *http.Client
+	logger         *slog.Logger
 
 	maxAttempts int
 	baseBackoff time.Duration
@@ -41,6 +42,10 @@ type Option func(*Client)
 
 func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) { c.http = hc }
+}
+
+func WithForwardedProto(proto string) Option {
+	return func(c *Client) { c.forwardedProto = proto }
 }
 
 func WithRetry(maxAttempts int, baseBackoff time.Duration) Option {
@@ -60,9 +65,12 @@ const (
 
 func New(baseURL, apiKey string, logger *slog.Logger, opts ...Option) *Client {
 	client := &Client{
-		baseURL:     baseURL,
-		apiKey:      apiKey,
-		http:        &http.Client{Timeout: defaultTimeout},
+		baseURL: baseURL,
+		apiKey:  apiKey,
+		http: &http.Client{
+			Timeout:       defaultTimeout,
+			CheckRedirect: refuseRedirect,
+		},
 		logger:      logger,
 		maxAttempts: defaultMaxAttempts,
 		baseBackoff: defaultBaseBackoff,
@@ -128,9 +136,15 @@ func (c *Client) post(ctx context.Context, endpoint string, body []byte) (retryA
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.forwardedProto != "" {
+		request.Header.Set("X-Forwarded-Proto", c.forwardedProto)
+	}
 
 	response, err := c.http.Do(request)
 	if err != nil {
+		if errors.Is(err, errRedirected) {
+			return 0, permanentError{fmt.Errorf("post points: %w", err)}
+		}
 		return 0, fmt.Errorf("post points: %w", err)
 	}
 	defer func() {
@@ -148,6 +162,12 @@ func (c *Client) post(ctx context.Context, endpoint string, body []byte) (retryA
 		return 0, permanentError{fmt.Errorf("dawarich returned %s: %s", response.Status, errorSnippet(response.Body))}
 	}
 }
+
+var errRedirected = errors.New(
+	"dawarich redirected the request, which means it expects HTTPS: " +
+		"use an https DAWARICH_URL, or keep http and set DAWARICH_FORWARDED_PROTO=https")
+
+func refuseRedirect(*http.Request, []*http.Request) error { return errRedirected }
 
 type permanentError struct{ err error }
 

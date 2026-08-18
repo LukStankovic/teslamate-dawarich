@@ -11,9 +11,10 @@ import (
 )
 
 type Config struct {
-	DawarichURL    string
-	DawarichAPIKey string
-	TeslaMateDSN   string
+	DawarichURL            string
+	DawarichAPIKey         string
+	DawarichForwardedProto string
+	TeslaMateDSN           string
 
 	PollInterval    time.Duration
 	OverlapWindow   time.Duration
@@ -54,11 +55,12 @@ func Load() (Config, error) {
 	fail := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
 
 	cfg := Config{
-		DawarichURL:    strings.TrimRight(os.Getenv("DAWARICH_URL"), "/"),
-		DawarichAPIKey: os.Getenv("DAWARICH_API_KEY"),
-		TeslaMateDSN:   os.Getenv("TESLAMATE_DB_URL"),
-		TrackerPrefix:  os.Getenv("TRACKER_PREFIX"),
-		LogLevel:       envOr("LOG_LEVEL", "info"),
+		DawarichURL:            strings.TrimRight(os.Getenv("DAWARICH_URL"), "/"),
+		DawarichAPIKey:         os.Getenv("DAWARICH_API_KEY"),
+		DawarichForwardedProto: strings.TrimSpace(os.Getenv("DAWARICH_FORWARDED_PROTO")),
+		TeslaMateDSN:           os.Getenv("TESLAMATE_DB_URL"),
+		TrackerPrefix:          os.Getenv("TRACKER_PREFIX"),
+		LogLevel:               envOr("LOG_LEVEL", "info"),
 	}
 
 	if cfg.DawarichURL == "" {

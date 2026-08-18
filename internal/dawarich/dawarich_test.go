@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -176,3 +177,45 @@ func TestSendPointsEmptyBatchSkipsRequest(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func TestSendPointsSetsForwardedProto(t *testing.T) {
+	t.Parallel()
+
+	var forwarded string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = r.Header.Get("X-Forwarded-Proto")
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "secret", discardLogger(), WithForwardedProto("https"))
+	if err := client.SendPoints(context.Background(), []Point{{Latitude: 1, Longitude: 2, Timestamp: time.Unix(0, 0)}}); err != nil {
+		t.Fatalf("SendPoints: %v", err)
+	}
+	if forwarded != "https" {
+		t.Errorf("X-Forwarded-Proto = %q, want https", forwarded)
+	}
+}
+
+func TestSendPointsDoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		http.Redirect(w, r, "https://elsewhere.example.com"+r.URL.Path, http.StatusMovedPermanently)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "secret", discardLogger(), WithRetry(5, time.Millisecond))
+	err := client.SendPoints(context.Background(), []Point{{Latitude: 1, Longitude: 2, Timestamp: time.Unix(0, 0)}})
+	if err == nil {
+		t.Fatal("SendPoints succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "DAWARICH_FORWARDED_PROTO") {
+		t.Errorf("error = %v, want it to name the fix", err)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("attempts = %d, want 1", got)
+	}
+}

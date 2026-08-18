@@ -80,7 +80,10 @@ func run() error {
 		return err
 	}
 
-	sync := syncer.New(store, dawarich.New(cfg.DawarichURL, cfg.DawarichAPIKey, logger), bookmark, syncer.Options{
+	client := dawarich.New(cfg.DawarichURL, cfg.DawarichAPIKey, logger,
+		dawarich.WithForwardedProto(cfg.DawarichForwardedProto))
+
+	sync := syncer.New(store, client, bookmark, syncer.Options{
 		PollInterval:    cfg.PollInterval,
 		OverlapWindow:   cfg.OverlapWindow,
 		InitialLookback: cfg.InitialLookback,

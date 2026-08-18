@@ -126,22 +126,26 @@ Dawarich and TeslaMate's Grafana both default to host port 3000, so on a shared
 host one of them is published elsewhere. Use the port Dawarich actually listens
 on.
 
-### If Dawarich is on a public domain
+### If Dawarich forces HTTPS
 
-`DAWARICH_URL: https://dawarich.example.com` works as well — the image ships CA
-certificates and a trailing slash is trimmed. An internal address is still
-preferable:
+Setting `APPLICATION_PROTOCOL=https` turns on Rails' `force_ssl`, so Dawarich
+answers plain HTTP with a redirect. The daemon refuses to follow redirects — a
+redirected POST would silently become a GET — and tells you what to do instead:
 
-- Routers that do not support NAT hairpinning cannot reach your own public IP
-  from inside the LAN.
-- A backfill sends hundreds of requests through whatever proxy or CDN sits in
-  front, where a WAF, a rate limit or a request timeout can cut it short.
-- Any authentication layer in front of Dawarich returns a login page instead of
-  JSON, which the client treats as a permanent failure and does not retry.
+- point `DAWARICH_URL` at the HTTPS address, or
+- keep the internal HTTP address and set `DAWARICH_FORWARDED_PROTO=https`, the
+  same trick Dawarich's own health check uses.
 
-To keep one URL where hairpinning fails, resolve the domain to the internal
-address for this container only. TLS still validates, because the hostname is
-unchanged:
+Dawarich also authorises the `Host` header against `APPLICATION_HOSTS`. Whatever
+name you put in `DAWARICH_URL` must be listed there, so reaching a container by
+its service name means adding `dawarich_app` to that list. An address that is
+already allowed — the LAN IP or the public domain — needs no change.
+
+A public URL works too, but an internal address avoids two traps: routers that
+cannot reach your own public IP from inside the LAN, and the proxy or CDN in
+front of a backfill's hundreds of requests. To keep one URL where hairpinning
+fails, resolve the domain to the internal address for this container only. TLS
+still validates, because the hostname is unchanged:
 
 ```yaml
 services:
@@ -182,6 +186,7 @@ those points would not deduplicate against these ones.
 | --- | --- | --- |
 | `DAWARICH_URL` | — | Base URL of your Dawarich instance |
 | `DAWARICH_API_KEY` | — | Dawarich API key |
+| `DAWARICH_FORWARDED_PROTO` | — | Set to `https` when reaching a `force_ssl` instance over internal HTTP |
 | `TESLAMATE_DB_URL` | — | TeslaMate Postgres connection string |
 | `POLL_INTERVAL` | `15s` | Upper bound on sync latency |
 | `OVERLAP_WINDOW` | `5m` | How far behind the cursor each pass re-reads |
