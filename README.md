@@ -164,13 +164,17 @@ environment if you regenerate it.
 
 ## Backfilling history
 
-```sh
-# Everything TeslaMate ever recorded, then exit.
-docker compose run --rm teslamate-dawarich -full -once
+Stop the running service first: both containers share `/data`, and they would
+overwrite each other's cursor.
 
-# From a specific date.
-docker compose run --rm teslamate-dawarich -from 2024-01-01 -once
+```sh
+docker compose stop teslamate-dawarich
+docker compose run --rm teslamate-dawarich -full -once      # or -from 2024-01-01
+docker compose up -d teslamate-dawarich
 ```
+
+`-full` and `-from` set the time range only. Which positions are synced stays
+with `DRIVES_ONLY`.
 
 Both rewrite the stored cursor, so the daemon carries on from the end of the
 backfill afterwards. Re-running a backfill is harmless.
