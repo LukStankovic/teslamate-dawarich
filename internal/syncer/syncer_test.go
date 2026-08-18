@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -291,5 +292,24 @@ func TestRunSyncsOnNudge(t *testing.T) {
 			t.Fatalf("Run did not sync: batches = %d", sink.batchCount())
 		case <-time.After(5 * time.Millisecond):
 		}
+	}
+}
+
+func TestSyncOnceLogsProgressDuringALongPass(t *testing.T) {
+	t.Parallel()
+
+	var logged strings.Builder
+	start := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
+	source := &fakeSource{positions: positionsEverySecond(progressLogStep*2, start)}
+	syncer := New(source, &fakeSink{}, &memoryCursor{at: start.Add(-time.Second)}, Options{
+		BatchSize:    progressLogStep / 2,
+		PollInterval: time.Hour,
+	}, slog.New(slog.NewTextHandler(&logged, nil)))
+
+	if _, err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("SyncOnce: %v", err)
+	}
+	if !strings.Contains(logged.String(), "sync in progress") {
+		t.Errorf("log = %q, want a progress line", logged.String())
 	}
 }

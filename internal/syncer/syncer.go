@@ -34,6 +34,8 @@ type Options struct {
 	TrackerPrefix   string
 }
 
+const progressLogStep = 10_000
+
 type Syncer struct {
 	source Source
 	sink   Sink
@@ -92,7 +94,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
 		Limit:      s.opts.BatchSize,
 	}
 
-	sent := 0
+	sent, loggedAt := 0, 0
 	for {
 		positions, err := s.source.Positions(ctx, page)
 		if err != nil {
@@ -116,6 +118,10 @@ func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
 			return sent, fmt.Errorf("save cursor: %w", err)
 		}
 		s.logger.Debug("batch synced", "points", len(points), "through", last.Date)
+		if sent-loggedAt >= progressLogStep {
+			loggedAt = sent
+			s.logger.Info("sync in progress", "points", sent, "through", last.Date)
+		}
 
 		if len(positions) < s.opts.BatchSize {
 			return sent, nil

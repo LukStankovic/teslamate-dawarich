@@ -183,6 +183,19 @@ with `DRIVES_ONLY`.
 Both rewrite the stored cursor, so the daemon carries on from the end of the
 backfill afterwards. Re-running a backfill is harmless.
 
+### Large histories
+
+A backfill sends `BATCH_SIZE` points per request and logs its progress every
+10,000 points. Millions of positions therefore take a while, and the cursor is
+saved after every accepted batch, so an interrupted run resumes where it stopped
+rather than starting over.
+
+Dawarich is the slower half: each batch queues anomaly detection, track and visit
+recalculation. Those jobs keep running long after the last point arrived. Watch
+them at `/sidekiq`, and consider raising `BACKGROUND_PROCESSING_CONCURRENCY` for
+the duration — it defaults to 3, and the queue is what decides when the map is
+complete.
+
 Already imported some drives as GPX? Delete that import in Dawarich before
 backfilling. Deleting an import removes its points, which avoids two slightly
 different copies of the same drive — GPX rounds coordinates and timestamps, so
