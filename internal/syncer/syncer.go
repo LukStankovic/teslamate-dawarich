@@ -43,17 +43,20 @@ type Syncer struct {
 	opts   Options
 	logger *slog.Logger
 
+	sentInOverlap map[int64]time.Time
+
 	now func() time.Time
 }
 
 func New(source Source, sink Sink, cursor Cursor, opts Options, logger *slog.Logger) *Syncer {
 	return &Syncer{
-		source: source,
-		sink:   sink,
-		cursor: cursor,
-		opts:   opts,
-		logger: logger,
-		now:    time.Now,
+		source:        source,
+		sink:          sink,
+		cursor:        cursor,
+		opts:          opts,
+		logger:        logger,
+		sentInOverlap: map[int64]time.Time{},
+		now:           time.Now,
 	}
 }
 
@@ -104,20 +107,26 @@ func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
 			return sent, nil
 		}
 
-		points := make([]dawarich.Point, 0, len(positions))
-		for _, position := range positions {
+		unsent := s.unsentPositions(positions)
+		points := make([]dawarich.Point, 0, len(unsent))
+		for _, position := range unsent {
 			points = append(points, toPoint(position, s.opts.TrackerPrefix))
 		}
-		if err := s.sink.SendPoints(ctx, points); err != nil {
-			return sent, fmt.Errorf("send %d points: %w", len(points), err)
+		if len(points) > 0 {
+			if err := s.sink.SendPoints(ctx, points); err != nil {
+				return sent, fmt.Errorf("send %d points: %w", len(points), err)
+			}
+			s.rememberSent(unsent)
+			sent += len(points)
 		}
-		sent += len(points)
 
 		last := positions[len(positions)-1]
 		if err := s.cursor.Save(last.Date); err != nil {
 			return sent, fmt.Errorf("save cursor: %w", err)
 		}
-		s.logger.Debug("batch synced", "points", len(points), "through", last.Date)
+		if len(points) > 0 {
+			s.logger.Debug("batch synced", "points", len(points), "through", last.Date)
+		}
 		if sent-loggedAt >= progressLogStep {
 			loggedAt = sent
 			s.logger.Info("sync in progress", "points", sent, "through", last.Date)
@@ -127,6 +136,36 @@ func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
 			return sent, nil
 		}
 		page.After, page.AfterID = last.Date, last.ID
+	}
+}
+
+func (s *Syncer) unsentPositions(positions []teslamate.Position) []teslamate.Position {
+	unsent := make([]teslamate.Position, 0, len(positions))
+	for _, position := range positions {
+		if _, alreadySent := s.sentInOverlap[position.ID]; !alreadySent {
+			unsent = append(unsent, position)
+		}
+	}
+	return unsent
+}
+
+func (s *Syncer) rememberSent(positions []teslamate.Position) {
+	var newest time.Time
+	for _, position := range positions {
+		s.sentInOverlap[position.ID] = position.Date
+		if position.Date.After(newest) {
+			newest = position.Date
+		}
+	}
+	if newest.IsZero() {
+		return
+	}
+
+	forgetBefore := newest.Add(-2 * s.opts.OverlapWindow)
+	for id, at := range s.sentInOverlap {
+		if at.Before(forgetBefore) {
+			delete(s.sentInOverlap, id)
+		}
 	}
 }
 

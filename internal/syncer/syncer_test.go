@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -312,4 +313,68 @@ func TestSyncOnceLogsProgressDuringALongPass(t *testing.T) {
 	if !strings.Contains(logged.String(), "sync in progress") {
 		t.Errorf("log = %q, want a progress line", logged.String())
 	}
+}
+
+func TestSyncOnceDoesNotResendTheOverlapWindow(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
+	source := &fakeSource{positions: positionsEverySecond(3, start)}
+	sink := &fakeSink{}
+	cursor := &memoryCursor{at: start.Add(-time.Second)}
+	syncer := newTestSyncer(source, sink, cursor, Options{BatchSize: 10, OverlapWindow: 5 * time.Minute})
+
+	first, err := syncer.SyncOnce(context.Background())
+	if err != nil {
+		t.Fatalf("first SyncOnce: %v", err)
+	}
+	if first != 3 {
+		t.Fatalf("first pass synced %d, want 3", first)
+	}
+
+	second, err := syncer.SyncOnce(context.Background())
+	if err != nil {
+		t.Fatalf("second SyncOnce: %v", err)
+	}
+	if second != 0 {
+		t.Errorf("second pass synced %d, want 0: the overlap window must not be re-sent", second)
+	}
+	if sink.batchCount() != 1 {
+		t.Errorf("batches = %d, want 1: Dawarich announces every accepted batch as a new location", sink.batchCount())
+	}
+}
+
+func TestSyncOnceSendsPositionsThatCommittedLateInsideTheOverlap(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
+	source := &fakeSource{positions: positionsEverySecond(3, start)}
+	sink := &fakeSink{}
+	cursor := &memoryCursor{at: start.Add(-time.Second)}
+	syncer := newTestSyncer(source, sink, cursor, Options{BatchSize: 10, OverlapWindow: 5 * time.Minute})
+
+	if _, err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("first SyncOnce: %v", err)
+	}
+
+	lateRow := teslamate.Position{ID: 99, CarName: "Model Y", Date: start.Add(time.Second)}
+	source.positions = append(source.positions, lateRow)
+	sortPositionsByDate(source.positions)
+
+	synced, err := syncer.SyncOnce(context.Background())
+	if err != nil {
+		t.Fatalf("second SyncOnce: %v", err)
+	}
+	if synced != 1 {
+		t.Errorf("synced = %d, want 1: a row that became visible late must still be sent", synced)
+	}
+}
+
+func sortPositionsByDate(positions []teslamate.Position) {
+	slices.SortFunc(positions, func(a, b teslamate.Position) int {
+		if a.Date.Equal(b.Date) {
+			return int(a.ID - b.ID)
+		}
+		return a.Date.Compare(b.Date)
+	})
 }
