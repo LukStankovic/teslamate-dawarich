@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/LukStankovic/teslamate-dawarich/internal/dawarich"
+	"github.com/LukStankovic/teslamate-dawarich/internal/state"
 	"github.com/LukStankovic/teslamate-dawarich/internal/teslamate"
 )
 
@@ -20,8 +22,8 @@ type Sink interface {
 }
 
 type Cursor interface {
-	Load() (time.Time, error)
-	Save(at time.Time) error
+	Load() (state.Checkpoint, error)
+	Save(checkpoint state.Checkpoint) error
 }
 
 type Options struct {
@@ -121,8 +123,8 @@ func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
 		}
 
 		last := positions[len(positions)-1]
-		if err := s.cursor.Save(last.Date); err != nil {
-			return sent, fmt.Errorf("save cursor: %w", err)
+		if err := s.saveCheckpoint(last.Date); err != nil {
+			return sent, err
 		}
 		if len(points) > 0 {
 			s.logger.Debug("batch synced", "points", len(points), "through", last.Date)
@@ -137,6 +139,19 @@ func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
 		}
 		page.After, page.AfterID = last.Date, last.ID
 	}
+}
+
+func (s *Syncer) saveCheckpoint(at time.Time) error {
+	sentIDs := make([]int64, 0, len(s.sentInOverlap))
+	for id := range s.sentInOverlap {
+		sentIDs = append(sentIDs, id)
+	}
+	slices.Sort(sentIDs)
+
+	if err := s.cursor.Save(state.Checkpoint{LastPositionAt: at, SentPositionID: sentIDs}); err != nil {
+		return fmt.Errorf("save cursor: %w", err)
+	}
+	return nil
 }
 
 func (s *Syncer) unsentPositions(positions []teslamate.Position) []teslamate.Position {
@@ -174,8 +189,14 @@ func (s *Syncer) startOfPass() (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("load cursor: %w", err)
 	}
-	if !stored.IsZero() {
-		return stored, nil
+	if stored.LastPositionAt.IsZero() {
+		return s.now().Add(-s.opts.InitialLookback), nil
 	}
-	return s.now().Add(-s.opts.InitialLookback), nil
+
+	for _, id := range stored.SentPositionID {
+		if _, known := s.sentInOverlap[id]; !known {
+			s.sentInOverlap[id] = stored.LastPositionAt
+		}
+	}
+	return stored.LastPositionAt, nil
 }

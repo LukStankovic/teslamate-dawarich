@@ -139,7 +139,7 @@ func applyBackfillFlags(bookmark *state.Bookmark, from string, full bool, logger
 	if err != nil || !ok {
 		return err
 	}
-	if err := bookmark.Save(start); err != nil {
+	if err := bookmark.Save(state.Checkpoint{LastPositionAt: start}); err != nil {
 		return err
 	}
 	logger.Info("cursor reset for backfill", "from", start)

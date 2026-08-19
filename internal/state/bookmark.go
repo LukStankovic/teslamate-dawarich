@@ -17,12 +17,13 @@ const (
 	fileMode         = 0o644
 )
 
-type Bookmark struct {
-	path string
+type Checkpoint struct {
+	LastPositionAt time.Time `json:"last_position_at"`
+	SentPositionID []int64   `json:"sent_position_ids,omitempty"`
 }
 
-type bookmarkFile struct {
-	LastPositionAt time.Time `json:"last_position_at"`
+type Bookmark struct {
+	path string
 }
 
 func DefaultDir() string {
@@ -38,24 +39,26 @@ func NewBookmark(dir string) *Bookmark {
 
 func (b *Bookmark) Path() string { return b.path }
 
-func (b *Bookmark) Load() (time.Time, error) {
+func (b *Bookmark) Load() (Checkpoint, error) {
 	data, err := os.ReadFile(b.path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return time.Time{}, nil
+		return Checkpoint{}, nil
 	}
 	if err != nil {
-		return time.Time{}, fmt.Errorf("read bookmark: %w", err)
+		return Checkpoint{}, fmt.Errorf("read bookmark: %w", err)
 	}
 
-	var file bookmarkFile
-	if err := json.Unmarshal(data, &file); err != nil {
-		return time.Time{}, fmt.Errorf("parse bookmark %s: %w", b.path, err)
+	var checkpoint Checkpoint
+	if err := json.Unmarshal(data, &checkpoint); err != nil {
+		return Checkpoint{}, fmt.Errorf("parse bookmark %s: %w", b.path, err)
 	}
-	return file.LastPositionAt, nil
+	return checkpoint, nil
 }
 
-func (b *Bookmark) Save(at time.Time) error {
-	data, err := json.Marshal(bookmarkFile{LastPositionAt: at.UTC()})
+func (b *Bookmark) Save(checkpoint Checkpoint) error {
+	checkpoint.LastPositionAt = checkpoint.LastPositionAt.UTC()
+
+	data, err := json.Marshal(checkpoint)
 	if err != nil {
 		return fmt.Errorf("encode bookmark: %w", err)
 	}

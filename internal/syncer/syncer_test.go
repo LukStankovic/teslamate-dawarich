@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LukStankovic/teslamate-dawarich/internal/dawarich"
+	"github.com/LukStankovic/teslamate-dawarich/internal/state"
 	"github.com/LukStankovic/teslamate-dawarich/internal/teslamate"
 )
 
@@ -85,21 +86,21 @@ func (f *fakeSink) batchCount() int {
 }
 
 type memoryCursor struct {
-	mu        sync.Mutex
-	at        time.Time
-	saveCount int
+	mu         sync.Mutex
+	checkpoint state.Checkpoint
+	saveCount  int
 }
 
-func (m *memoryCursor) Load() (time.Time, error) {
+func (m *memoryCursor) Load() (state.Checkpoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.at, nil
+	return m.checkpoint, nil
 }
 
-func (m *memoryCursor) Save(at time.Time) error {
+func (m *memoryCursor) Save(checkpoint state.Checkpoint) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.at = at
+	m.checkpoint = checkpoint
 	m.saveCount++
 	return nil
 }
@@ -107,7 +108,11 @@ func (m *memoryCursor) Save(at time.Time) error {
 func (m *memoryCursor) state() (time.Time, int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.at, m.saveCount
+	return m.checkpoint.LastPositionAt, m.saveCount
+}
+
+func cursorAt(at time.Time) *memoryCursor {
+	return &memoryCursor{checkpoint: state.Checkpoint{LastPositionAt: at}}
 }
 
 func positionsEverySecond(count int, start time.Time) []teslamate.Position {
@@ -140,7 +145,7 @@ func TestSyncOncePagesUntilDrained(t *testing.T) {
 	start := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
 	source := &fakeSource{positions: positionsEverySecond(5, start)}
 	sink := &fakeSink{}
-	cursor := &memoryCursor{at: start.Add(-time.Second)}
+	cursor := cursorAt(start.Add(-time.Second))
 
 	synced, err := newTestSyncer(source, sink, cursor, Options{BatchSize: 2}).SyncOnce(context.Background())
 	if err != nil {
@@ -160,9 +165,9 @@ func TestSyncOncePagesUntilDrained(t *testing.T) {
 func TestSyncOnceQueriesBehindTheCursorByTheOverlapWindow(t *testing.T) {
 	t.Parallel()
 
-	cursorAt := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
+	cursorMoment := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
 	source := &fakeSource{}
-	syncer := newTestSyncer(source, &fakeSink{}, &memoryCursor{at: cursorAt}, Options{OverlapWindow: 5 * time.Minute})
+	syncer := newTestSyncer(source, &fakeSink{}, cursorAt(cursorMoment), Options{OverlapWindow: 5 * time.Minute})
 
 	if _, err := syncer.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("SyncOnce: %v", err)
@@ -170,7 +175,7 @@ func TestSyncOnceQueriesBehindTheCursorByTheOverlapWindow(t *testing.T) {
 	if source.queryCount() != 1 {
 		t.Fatalf("queries = %d, want 1", source.queryCount())
 	}
-	if want := cursorAt.Add(-5 * time.Minute); !source.firstQuery().After.Equal(want) {
+	if want := cursorMoment.Add(-5 * time.Minute); !source.firstQuery().After.Equal(want) {
 		t.Errorf("query after = %v, want %v", source.firstQuery().After, want)
 	}
 }
@@ -196,7 +201,7 @@ func TestSyncOnceKeepsCursorWhenDawarichRejectsTheBatch(t *testing.T) {
 
 	start := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
 	source := &fakeSource{positions: positionsEverySecond(2, start)}
-	cursor := &memoryCursor{at: start.Add(-time.Second)}
+	cursor := cursorAt(start.Add(-time.Second))
 	syncer := newTestSyncer(source, &fakeSink{err: errors.New("dawarich down")}, cursor, Options{})
 
 	if _, err := syncer.SyncOnce(context.Background()); err == nil {
@@ -216,7 +221,7 @@ func TestSyncOnceDrainsPositionsSharingOneTimestamp(t *testing.T) {
 		positions = append(positions, teslamate.Position{ID: int64(i + 1), Date: at, CarName: "Model Y"})
 	}
 	source := &fakeSource{positions: positions}
-	syncer := newTestSyncer(source, &fakeSink{}, &memoryCursor{at: at}, Options{
+	syncer := newTestSyncer(source, &fakeSink{}, cursorAt(at), Options{
 		BatchSize:     2,
 		OverlapWindow: time.Minute,
 	})
@@ -248,7 +253,7 @@ func TestSyncOncePagesByIDWithinOneTimestamp(t *testing.T) {
 		{ID: 1, Date: at, CarName: "Model Y"},
 		{ID: 2, Date: at, CarName: "Model Y"},
 	}}
-	syncer := newTestSyncer(source, &fakeSink{}, &memoryCursor{at: at}, Options{BatchSize: 1})
+	syncer := newTestSyncer(source, &fakeSink{}, cursorAt(at), Options{BatchSize: 1})
 
 	if _, err := syncer.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("SyncOnce: %v", err)
@@ -272,7 +277,7 @@ func TestRunSyncsOnNudge(t *testing.T) {
 	start := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
 	source := &fakeSource{positions: positionsEverySecond(1, start)}
 	sink := &fakeSink{}
-	cursor := &memoryCursor{at: start.Add(-time.Second)}
+	cursor := cursorAt(start.Add(-time.Second))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -302,7 +307,7 @@ func TestSyncOnceLogsProgressDuringALongPass(t *testing.T) {
 	var logged strings.Builder
 	start := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
 	source := &fakeSource{positions: positionsEverySecond(progressLogStep*2, start)}
-	syncer := New(source, &fakeSink{}, &memoryCursor{at: start.Add(-time.Second)}, Options{
+	syncer := New(source, &fakeSink{}, cursorAt(start.Add(-time.Second)), Options{
 		BatchSize:    progressLogStep / 2,
 		PollInterval: time.Hour,
 	}, slog.New(slog.NewTextHandler(&logged, nil)))
@@ -321,7 +326,7 @@ func TestSyncOnceDoesNotResendTheOverlapWindow(t *testing.T) {
 	start := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
 	source := &fakeSource{positions: positionsEverySecond(3, start)}
 	sink := &fakeSink{}
-	cursor := &memoryCursor{at: start.Add(-time.Second)}
+	cursor := cursorAt(start.Add(-time.Second))
 	syncer := newTestSyncer(source, sink, cursor, Options{BatchSize: 10, OverlapWindow: 5 * time.Minute})
 
 	first, err := syncer.SyncOnce(context.Background())
@@ -350,7 +355,7 @@ func TestSyncOnceSendsPositionsThatCommittedLateInsideTheOverlap(t *testing.T) {
 	start := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
 	source := &fakeSource{positions: positionsEverySecond(3, start)}
 	sink := &fakeSink{}
-	cursor := &memoryCursor{at: start.Add(-time.Second)}
+	cursor := cursorAt(start.Add(-time.Second))
 	syncer := newTestSyncer(source, sink, cursor, Options{BatchSize: 10, OverlapWindow: 5 * time.Minute})
 
 	if _, err := syncer.SyncOnce(context.Background()); err != nil {
@@ -377,4 +382,27 @@ func sortPositionsByDate(positions []teslamate.Position) {
 		}
 		return a.Date.Compare(b.Date)
 	})
+}
+
+func TestRestartDoesNotResendWhatTheCheckpointRecorded(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
+	positions := positionsEverySecond(3, start)
+	cursor := cursorAt(start.Add(-time.Second))
+	opts := Options{BatchSize: 10, OverlapWindow: 5 * time.Minute}
+
+	first := newTestSyncer(&fakeSource{positions: positions}, &fakeSink{}, cursor, opts)
+	if _, err := first.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("first SyncOnce: %v", err)
+	}
+
+	restarted := newTestSyncer(&fakeSource{positions: positions}, &fakeSink{}, cursor, opts)
+	synced, err := restarted.SyncOnce(context.Background())
+	if err != nil {
+		t.Fatalf("SyncOnce after restart: %v", err)
+	}
+	if synced != 0 {
+		t.Errorf("synced = %d, want 0: the checkpoint already lists these positions", synced)
+	}
 }

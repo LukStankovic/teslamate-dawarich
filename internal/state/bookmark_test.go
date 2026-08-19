@@ -11,29 +11,40 @@ func TestBookmarkRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	bookmark := NewBookmark(t.TempDir())
-	at := time.Date(2026, time.August, 18, 17, 42, 3, 0, time.UTC)
+	saved := Checkpoint{
+		LastPositionAt: time.Date(2026, time.August, 19, 17, 42, 3, 0, time.UTC),
+		SentPositionID: []int64{7, 8, 9},
+	}
 
-	if err := bookmark.Save(at); err != nil {
+	if err := bookmark.Save(saved); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	got, err := bookmark.Load()
+	loaded, err := bookmark.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !got.Equal(at) {
-		t.Errorf("Load = %v, want %v", got, at)
+	if !loaded.LastPositionAt.Equal(saved.LastPositionAt) {
+		t.Errorf("LastPositionAt = %v, want %v", loaded.LastPositionAt, saved.LastPositionAt)
+	}
+	if len(loaded.SentPositionID) != len(saved.SentPositionID) {
+		t.Fatalf("SentPositionID = %v, want %v", loaded.SentPositionID, saved.SentPositionID)
+	}
+	for i, id := range saved.SentPositionID {
+		if loaded.SentPositionID[i] != id {
+			t.Errorf("SentPositionID[%d] = %d, want %d", i, loaded.SentPositionID[i], id)
+		}
 	}
 }
 
-func TestBookmarkMissingFileIsZero(t *testing.T) {
+func TestBookmarkMissingFileIsEmpty(t *testing.T) {
 	t.Parallel()
 
-	got, err := NewBookmark(t.TempDir()).Load()
+	loaded, err := NewBookmark(t.TempDir()).Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !got.IsZero() {
-		t.Errorf("Load = %v, want the zero time", got)
+	if !loaded.LastPositionAt.IsZero() || loaded.SentPositionID != nil {
+		t.Errorf("Load = %+v, want the zero checkpoint", loaded)
 	}
 }
 
@@ -41,7 +52,7 @@ func TestBookmarkCorruptFileErrors(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "bookmark.json"), []byte("{not json"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, bookmarkFilename), []byte("{not json"), fileMode); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +65,7 @@ func TestBookmarkSaveLeavesNoTempFile(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	if err := NewBookmark(dir).Save(time.Now()); err != nil {
+	if err := NewBookmark(dir).Save(Checkpoint{LastPositionAt: time.Unix(1, 0)}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -62,7 +73,7 @@ func TestBookmarkSaveLeavesNoTempFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Name() != "bookmark.json" {
-		t.Errorf("directory contains %v, want only bookmark.json", entries)
+	if len(entries) != 1 || entries[0].Name() != bookmarkFilename {
+		t.Errorf("directory contains %v, want only %s", entries, bookmarkFilename)
 	}
 }
