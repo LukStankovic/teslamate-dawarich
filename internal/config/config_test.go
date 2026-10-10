@@ -138,7 +138,7 @@ func TestLoadPresenceFromPhoneTracker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := Presence{TrackerID: "iphone", RadiusMeters: 500, SettleDelay: 15 * time.Minute}
+	want := Presence{TrackerID: "iphone", RadiusMeters: 500, PhoneWait: 6 * time.Hour, SettleDelay: 15 * time.Minute}
 	if cfg.Presence != want || !cfg.Presence.Enabled() {
 		t.Errorf("Presence = %+v, want %+v and enabled", cfg.Presence, want)
 	}
@@ -162,11 +162,12 @@ func TestLoadPresenceFromHomeAssistant(t *testing.T) {
 
 func TestLoadRejectsBadPresenceValues(t *testing.T) {
 	tests := map[string]struct{ key, value string }{
-		"zero radius":        {"PRESENCE_RADIUS", "0"},
-		"radius with unit":   {"PRESENCE_RADIUS", "500m"},
-		"negative settle":    {"PRESENCE_SETTLE", "-1m"},
-		"non-boolean switch": {"PRESENCE_SYNC_UNKNOWN", "maybe"},
-		"entity without url": {"PRESENCE_HA_ENTITY", "binary_sensor.in_tesla"},
+		"zero radius":         {"PRESENCE_RADIUS", "0"},
+		"radius with unit":    {"PRESENCE_RADIUS", "500m"},
+		"negative settle":     {"PRESENCE_SETTLE", "-1m"},
+		"negative phone wait": {"PRESENCE_PHONE_WAIT", "-1h"},
+		"non-boolean switch":  {"PRESENCE_SYNC_UNKNOWN", "maybe"},
+		"entity without url":  {"PRESENCE_HA_ENTITY", "binary_sensor.in_tesla"},
 	}
 
 	for name, tc := range tests {

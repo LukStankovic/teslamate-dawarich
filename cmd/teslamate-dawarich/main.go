@@ -129,13 +129,14 @@ func presenceGate(cfg config.Config, store *teslamate.Store, client *dawarich.Cl
 	}
 	if cfg.Presence.TrackerID != "" {
 		signals = append(signals, presence.NewPhoneSignal(store, client,
-			cfg.Presence.TrackerID, float64(cfg.Presence.RadiusMeters)))
+			cfg.Presence.TrackerID, float64(cfg.Presence.RadiusMeters), cfg.Presence.PhoneWait))
 	}
 
 	logger.Info("presence check enabled",
 		"home_assistant_entity", cfg.Presence.HomeAssistant.EntityID,
 		"phone_tracker", cfg.Presence.TrackerID,
 		"radius_m", cfg.Presence.RadiusMeters,
+		"phone_wait", cfg.Presence.PhoneWait,
 		"settle", cfg.Presence.SettleDelay,
 		"sync_unknown", cfg.Presence.SyncWhenUnknown,
 	)

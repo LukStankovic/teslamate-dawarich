@@ -291,12 +291,21 @@ tracker id is whatever your phone's points carry:
 curl -s "https://dawarich.example.com/api/v1/points?api_key=KEY&slim=true&per_page=20&order=desc" | jq -r '.[].tracker_id' | sort -u
 ```
 
+Phone apps often upload in batches, so a drive's points can arrive well after
+it ended. While the phone has sent nothing from the drive and nothing since, the
+drive waits for it, rechecked every five minutes, for up to
+`PRESENCE_PHONE_WAIT` (6 hours) after the drive ended. A point from after the
+drive with none from during it means the phone was elsewhere. Some apps upload
+only when opened, days later; for those the phone cannot decide in time, and
+Home Assistant or `PRESENCE_SYNC_UNKNOWN` is the better fit.
+
 ### When neither source can tell
 
 Home Assistant may have no history for the drive, and the phone may have
-recorded nothing during it. Such a drive is skipped: tracking apps record
-movement, so a silent phone stayed where it was. If yours records too sparsely
-for that, set `PRESENCE_SYNC_UNKNOWN=true` and such drives are synced instead.
+recorded nothing during it, even after waiting. Such a drive is skipped:
+tracking apps record movement, so a silent phone stayed where it was. If yours
+records too sparsely for that, set `PRESENCE_SYNC_UNKNOWN=true` and such drives
+are synced instead.
 
 A source that cannot be reached does not count as silent: unless the other one
 decides, the drive is held and checked again on the next pass.
@@ -307,7 +316,8 @@ the source that made it.
 ### What it costs
 
 Drives reach Dawarich after they end, not live, and anything queued behind a
-held drive — another car, parked positions — waits with it. The check covers
+held drive — another car, parked positions — waits with it, for as long as
+`PRESENCE_PHONE_WAIT` when the phone is the source and stays silent. The check covers
 drive positions only; with `DRIVES_ONLY=false` the parked positions at the
 borrower's destination are still synced.
 
@@ -378,6 +388,7 @@ something did not arrive.
 | `PRESENCE_HA_ENTITY` | — | Entity that is `on` while you are in the car |
 | `PRESENCE_TRACKER_ID` | — | Dawarich `tracker_id` of your phone, see [above](#skipping-drives-you-were-not-on) |
 | `PRESENCE_RADIUS` | `500` | Meters between phone and car that still count as together |
+| `PRESENCE_PHONE_WAIT` | `6h` | How long after a drive to wait for a phone that has not uploaded since |
 | `MQTT_HOST` | — | Set to enable nudging; unset disables MQTT entirely |
 | `MQTT_PORT` | `1883` | `8883` when `MQTT_TLS=true` and no port is given |
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | — | Broker credentials |
