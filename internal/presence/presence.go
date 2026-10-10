@@ -43,31 +43,38 @@ type Options struct {
 	SyncWhenUnknown bool
 }
 
+const recheckInterval = 5 * time.Minute
+
 type Checker struct {
 	drives  Drives
 	signals []Signal
 	opts    Options
 	logger  *slog.Logger
 
-	decided map[int64]Verdict
+	decided   map[int64]Verdict
+	recheckAt map[int64]time.Time
 
 	now func() time.Time
 }
 
 func NewChecker(drives Drives, signals []Signal, opts Options, logger *slog.Logger) *Checker {
 	return &Checker{
-		drives:  drives,
-		signals: signals,
-		opts:    opts,
-		logger:  logger,
-		decided: map[int64]Verdict{},
-		now:     time.Now,
+		drives:    drives,
+		signals:   signals,
+		opts:      opts,
+		logger:    logger,
+		decided:   map[int64]Verdict{},
+		recheckAt: map[int64]time.Time{},
+		now:       time.Now,
 	}
 }
 
 func (c *Checker) Verdict(ctx context.Context, driveID int64) (Verdict, error) {
 	if verdict, ok := c.decided[driveID]; ok {
 		return verdict, nil
+	}
+	if at, ok := c.recheckAt[driveID]; ok && c.now().Before(at) {
+		return Pending, nil
 	}
 
 	drive, err := c.drives.Drive(ctx, driveID)
@@ -82,6 +89,12 @@ func (c *Checker) Verdict(ctx context.Context, driveID int64) (Verdict, error) {
 	if err != nil {
 		return Pending, err
 	}
+	if verdict == Pending {
+		c.logger.Debug("drive waits for presence source", "drive_id", driveID, "waiting_on", decidedBy)
+		c.recheckAt[driveID] = c.now().Add(recheckInterval)
+		return Pending, nil
+	}
+	delete(c.recheckAt, driveID)
 
 	c.logger.Info("drive checked for presence",
 		"drive_id", driveID, "started_at", drive.StartedAt, "verdict", verdict, "decided_by", decidedBy)

@@ -29,22 +29,31 @@ type PhoneSignal struct {
 	points       PhonePoints
 	trackerID    string
 	radiusMeters float64
+	uploadWait   time.Duration
+
+	now func() time.Time
 }
 
-func NewPhoneSignal(routes Routes, points PhonePoints, trackerID string, radiusMeters float64) *PhoneSignal {
-	return &PhoneSignal{routes: routes, points: points, trackerID: trackerID, radiusMeters: radiusMeters}
+func NewPhoneSignal(routes Routes, points PhonePoints, trackerID string, radiusMeters float64, uploadWait time.Duration) *PhoneSignal {
+	return &PhoneSignal{
+		routes:       routes,
+		points:       points,
+		trackerID:    trackerID,
+		radiusMeters: radiusMeters,
+		uploadWait:   uploadWait,
+		now:          time.Now,
+	}
 }
 
 func (s *PhoneSignal) Name() string { return "dawarich " + s.trackerID }
 
 func (s *PhoneSignal) Witness(ctx context.Context, drive teslamate.Drive) (Verdict, bool, error) {
-	points, err := s.points.Points(ctx, drive.StartedAt, *drive.EndedAt)
+	phone, err := s.ownPoints(ctx, drive.StartedAt, *drive.EndedAt)
 	if err != nil {
 		return Pending, false, fmt.Errorf("read phone points for drive %d: %w", drive.ID, err)
 	}
-	phone := s.ownPoints(points)
 	if len(phone) == 0 {
-		return Pending, false, nil
+		return s.awaitUpload(ctx, drive)
 	}
 
 	route, err := s.routes.DriveRoute(ctx, drive.ID)
@@ -57,14 +66,34 @@ func (s *PhoneSignal) Witness(ctx context.Context, drive teslamate.Drive) (Verdi
 	return Absent, true, nil
 }
 
-func (s *PhoneSignal) ownPoints(points []dawarich.TrackedPoint) []dawarich.TrackedPoint {
+func (s *PhoneSignal) awaitUpload(ctx context.Context, drive teslamate.Drive) (Verdict, bool, error) {
+	now := s.now()
+	if !now.Before(drive.EndedAt.Add(s.uploadWait)) {
+		return Pending, false, nil
+	}
+
+	later, err := s.ownPoints(ctx, *drive.EndedAt, now)
+	if err != nil {
+		return Pending, false, fmt.Errorf("read phone points after drive %d: %w", drive.ID, err)
+	}
+	if len(later) > 0 {
+		return Pending, false, nil
+	}
+	return Pending, true, nil
+}
+
+func (s *PhoneSignal) ownPoints(ctx context.Context, from, to time.Time) ([]dawarich.TrackedPoint, error) {
+	points, err := s.points.Points(ctx, from, to)
+	if err != nil {
+		return nil, err
+	}
 	own := make([]dawarich.TrackedPoint, 0, len(points))
 	for _, point := range points {
 		if point.TrackerID == s.trackerID {
 			own = append(own, point)
 		}
 	}
-	return own
+	return own, nil
 }
 
 func countAlongRoute(phone []dawarich.TrackedPoint, route []teslamate.RoutePoint, radiusMeters float64) int {

@@ -13,8 +13,14 @@ type fakePhonePoints struct {
 	points []dawarich.TrackedPoint
 }
 
-func (f *fakePhonePoints) Points(context.Context, time.Time, time.Time) ([]dawarich.TrackedPoint, error) {
-	return f.points, nil
+func (f *fakePhonePoints) Points(_ context.Context, from, to time.Time) ([]dawarich.TrackedPoint, error) {
+	var inWindow []dawarich.TrackedPoint
+	for _, point := range f.points {
+		if !point.Timestamp.Before(from) && !point.Timestamp.After(to) {
+			inWindow = append(inWindow, point)
+		}
+	}
+	return inWindow, nil
 }
 
 func routeHeadingEast() []teslamate.RoutePoint {
@@ -48,7 +54,13 @@ func phoneAtHome(trackerID string) []dawarich.TrackedPoint {
 
 func witnessPhone(t *testing.T, points []dawarich.TrackedPoint) (Verdict, bool) {
 	t.Helper()
-	signal := NewPhoneSignal(&fakeDrives{route: routeHeadingEast()}, &fakePhonePoints{points: points}, "iphone", 500)
+	return witnessPhoneAt(t, points, afterUploadWait)
+}
+
+func witnessPhoneAt(t *testing.T, points []dawarich.TrackedPoint, now time.Time) (Verdict, bool) {
+	t.Helper()
+	signal := NewPhoneSignal(&fakeDrives{route: routeHeadingEast()}, &fakePhonePoints{points: points}, "iphone", 500, uploadWait)
+	signal.now = func() time.Time { return now }
 	verdict, known, err := signal.Witness(context.Background(), finishedDrive())
 	if err != nil {
 		t.Fatalf("Witness: %v", err)
@@ -86,11 +98,48 @@ func TestOtherTrackersNeverSpeakForThePhone(t *testing.T) {
 	}
 }
 
-func TestSilentPhoneKnowsNothing(t *testing.T) {
+const uploadWait = 6 * time.Hour
+
+var (
+	beforeUploadWait = driveEnd.Add(time.Hour)
+	afterUploadWait  = driveEnd.Add(uploadWait)
+)
+
+func phoneLaterAt(at time.Time) []dawarich.TrackedPoint {
+	return []dawarich.TrackedPoint{{Latitude: 49.2, Longitude: 16.6, Timestamp: at, TrackerID: "iphone"}}
+}
+
+func TestPhoneSilentPastTheUploadWaitKnowsNothing(t *testing.T) {
 	t.Parallel()
 
 	if _, known := witnessPhone(t, nil); known {
 		t.Error("known = true, want a phone without points to leave the decision to others")
+	}
+}
+
+func TestPhoneThatHasNotUploadedSinceTheDriveAsksToWait(t *testing.T) {
+	t.Parallel()
+
+	verdict, known := witnessPhoneAt(t, nil, beforeUploadWait)
+	if !known || verdict != Pending {
+		t.Errorf("verdict = %v (known %v), want pending", verdict, known)
+	}
+}
+
+func TestPhoneThatUploadedOnlyAfterTheDriveKnowsNothing(t *testing.T) {
+	t.Parallel()
+
+	if _, known := witnessPhoneAt(t, phoneLaterAt(driveEnd.Add(30*time.Minute)), beforeUploadWait); known {
+		t.Error("known = true, want a phone silent during the drive to leave the decision to others")
+	}
+}
+
+func TestPhonePointsUploadedLateStillDecide(t *testing.T) {
+	t.Parallel()
+
+	verdict, known := witnessPhoneAt(t, phoneAlong(routeHeadingEast(), "iphone"), beforeUploadWait)
+	if !known || verdict != Present {
+		t.Errorf("verdict = %v (known %v), want present", verdict, known)
 	}
 }
 

@@ -32,6 +32,7 @@ type Config struct {
 type Presence struct {
 	TrackerID       string
 	RadiusMeters    int
+	PhoneWait       time.Duration
 	SettleDelay     time.Duration
 	SyncWhenUnknown bool
 	HomeAssistant   HomeAssistant
@@ -59,16 +60,17 @@ type MQTT struct {
 }
 
 const (
-	defaultPollInterval    = 15 * time.Second
-	defaultOverlapWindow   = 5 * time.Minute
-	defaultInitialLookback = 24 * time.Hour
-	defaultBatchSize       = 1000
-	minPollInterval        = time.Second
-	maxBatchSize           = 10000
-	defaultPresenceRadius  = 500
-	defaultPresenceSettle  = 15 * time.Minute
-	defaultMQTTPort        = "1883"
-	defaultMQTTTLSPort     = "8883"
+	defaultPollInterval      = 15 * time.Second
+	defaultOverlapWindow     = 5 * time.Minute
+	defaultInitialLookback   = 24 * time.Hour
+	defaultBatchSize         = 1000
+	minPollInterval          = time.Second
+	maxBatchSize             = 10000
+	defaultPresenceRadius    = 500
+	defaultPresenceSettle    = 15 * time.Minute
+	defaultPresencePhoneWait = 6 * time.Hour
+	defaultMQTTPort          = "1883"
+	defaultMQTTTLSPort       = "8883"
 )
 
 func Load() (Config, error) {
@@ -145,6 +147,12 @@ func loadPresence() (Presence, error) {
 	}
 	if presence.RadiusMeters < 1 {
 		return Presence{}, errors.New("PRESENCE_RADIUS must be at least 1 meter")
+	}
+	if presence.PhoneWait, err = durationOr("PRESENCE_PHONE_WAIT", defaultPresencePhoneWait); err != nil {
+		return Presence{}, err
+	}
+	if presence.PhoneWait < 0 {
+		return Presence{}, errors.New("PRESENCE_PHONE_WAIT must not be negative")
 	}
 	if presence.SettleDelay, err = durationOr("PRESENCE_SETTLE", defaultPresenceSettle); err != nil {
 		return Presence{}, err

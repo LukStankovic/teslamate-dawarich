@@ -174,3 +174,27 @@ func TestFailingSignalLeavesTheDriveUndecided(t *testing.T) {
 		t.Errorf("Verdict after recovery = %v, %v, want absent", verdict, err)
 	}
 }
+
+func TestWaitingSignalHoldsTheDriveAndIsAskedAgainLater(t *testing.T) {
+	t.Parallel()
+
+	signal := &fakeSignal{verdict: Pending, known: true}
+	checker := newTestChecker(finishedDrive(), Options{SyncWhenUnknown: true}, signal)
+
+	now := afterSettle
+	checker.now = func() time.Time { return now }
+	for range 2 {
+		if verdict, err := checker.Verdict(context.Background(), 7); err != nil || verdict != Pending {
+			t.Fatalf("Verdict = %v, %v, want pending", verdict, err)
+		}
+	}
+	if signal.calls != 1 {
+		t.Errorf("signal asked %d times before the recheck, want 1", signal.calls)
+	}
+
+	now = now.Add(recheckInterval)
+	signal.verdict = Absent
+	if verdict, err := checker.Verdict(context.Background(), 7); err != nil || verdict != Absent {
+		t.Errorf("Verdict after recheck = %v, %v, want absent", verdict, err)
+	}
+}
