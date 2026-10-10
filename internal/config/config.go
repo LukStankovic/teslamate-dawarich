@@ -24,9 +24,28 @@ type Config struct {
 	CarIDs          []int32
 	TrackerPrefix   string
 
+	Presence Presence
 	MQTT     MQTT
 	LogLevel string
 }
+
+type Presence struct {
+	TrackerID       string
+	RadiusMeters    int
+	SettleDelay     time.Duration
+	SyncWhenUnknown bool
+	HomeAssistant   HomeAssistant
+}
+
+type HomeAssistant struct {
+	URL      string
+	Token    string
+	EntityID string
+}
+
+func (p Presence) Enabled() bool { return p.TrackerID != "" || p.HomeAssistant.Enabled() }
+
+func (h HomeAssistant) Enabled() bool { return h.EntityID != "" }
 
 type MQTT struct {
 	Enabled   bool
@@ -46,6 +65,8 @@ const (
 	defaultBatchSize       = 1000
 	minPollInterval        = time.Second
 	maxBatchSize           = 10000
+	defaultPresenceRadius  = 500
+	defaultPresenceSettle  = 15 * time.Minute
 	defaultMQTTPort        = "1883"
 	defaultMQTTTLSPort     = "8883"
 )
@@ -100,6 +121,9 @@ func Load() (Config, error) {
 	if cfg.CarIDs, err = carIDs(os.Getenv("CAR_IDS")); err != nil {
 		fail("%w", err)
 	}
+	if cfg.Presence, err = loadPresence(); err != nil {
+		fail("%w", err)
+	}
 	if cfg.MQTT, err = loadMQTT(); err != nil {
 		fail("%w", err)
 	}
@@ -108,6 +132,46 @@ func Load() (Config, error) {
 		return Config{}, errors.Join(errs...)
 	}
 	return cfg, nil
+}
+
+func loadPresence() (Presence, error) {
+	var (
+		presence Presence
+		err      error
+	)
+	presence.TrackerID = strings.TrimSpace(os.Getenv("PRESENCE_TRACKER_ID"))
+	if presence.RadiusMeters, err = intOr("PRESENCE_RADIUS", defaultPresenceRadius); err != nil {
+		return Presence{}, err
+	}
+	if presence.RadiusMeters < 1 {
+		return Presence{}, errors.New("PRESENCE_RADIUS must be at least 1 meter")
+	}
+	if presence.SettleDelay, err = durationOr("PRESENCE_SETTLE", defaultPresenceSettle); err != nil {
+		return Presence{}, err
+	}
+	if presence.SettleDelay < 0 {
+		return Presence{}, errors.New("PRESENCE_SETTLE must not be negative")
+	}
+	if presence.SyncWhenUnknown, err = boolOr("PRESENCE_SYNC_UNKNOWN", false); err != nil {
+		return Presence{}, err
+	}
+	if presence.HomeAssistant, err = loadHomeAssistant(); err != nil {
+		return Presence{}, err
+	}
+	return presence, nil
+}
+
+func loadHomeAssistant() (HomeAssistant, error) {
+	ha := HomeAssistant{
+		URL:      strings.TrimRight(strings.TrimSpace(os.Getenv("PRESENCE_HA_URL")), "/"),
+		Token:    strings.TrimSpace(os.Getenv("PRESENCE_HA_TOKEN")),
+		EntityID: strings.TrimSpace(os.Getenv("PRESENCE_HA_ENTITY")),
+	}
+
+	if ha != (HomeAssistant{}) && (ha.URL == "" || ha.Token == "" || ha.EntityID == "") {
+		return HomeAssistant{}, errors.New("PRESENCE_HA_URL, PRESENCE_HA_TOKEN and PRESENCE_HA_ENTITY must be set together")
+	}
+	return ha, nil
 }
 
 func loadMQTT() (MQTT, error) {

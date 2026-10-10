@@ -219,3 +219,84 @@ func TestSendPointsDoesNotFollowRedirects(t *testing.T) {
 		t.Errorf("attempts = %d, want 1", got)
 	}
 }
+
+func TestPointsReadsEveryPageOfTheWindow(t *testing.T) {
+	t.Parallel()
+
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		if r.URL.Path != "/api/v1/points" || r.Header.Get("Authorization") != "Bearer secret" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("X-Total-Pages", "2")
+		if r.URL.Query().Get("page") == "1" {
+			_, _ = io.WriteString(w, `[{"latitude":"50.0755","longitude":"14.4378","timestamp":1791446400,"tracker_id":"iphone"}]`)
+			return
+		}
+		_, _ = io.WriteString(w, `[{"latitude":"49.19","longitude":"16.6","timestamp":1791446460,"tracker_id":null}]`)
+	}))
+	defer server.Close()
+
+	from := time.Unix(1791446400, 0)
+	points, err := New(server.URL, "secret", discardLogger()).Points(context.Background(), from, from.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Points: %v", err)
+	}
+
+	want := []TrackedPoint{
+		{Latitude: 50.0755, Longitude: 14.4378, Timestamp: time.Unix(1791446400, 0).UTC(), TrackerID: "iphone"},
+		{Latitude: 49.19, Longitude: 16.6, Timestamp: time.Unix(1791446460, 0).UTC()},
+	}
+	if len(points) != len(want) {
+		t.Fatalf("points = %+v, want %+v", points, want)
+	}
+	for i := range want {
+		if points[i] != want[i] {
+			t.Errorf("point %d = %+v, want %+v", i, points[i], want[i])
+		}
+	}
+	if len(queries) != 2 || !strings.Contains(queries[0], "start_at=1791446400") ||
+		!strings.Contains(queries[0], "end_at=1791446460") || !strings.Contains(queries[0], "slim=true") {
+		t.Errorf("queries = %q, want two slim pages bounded by the window", queries)
+	}
+}
+
+func TestPointsKeepsPagingWithoutTotalPagesHeader(t *testing.T) {
+	t.Parallel()
+
+	fullPage := "[" + strings.TrimSuffix(strings.Repeat(`{"latitude":"50","longitude":"14","timestamp":1791446400,"tracker_id":"iphone"},`, pointsPerPage), ",") + "]"
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Query().Get("page") == "1" {
+			_, _ = io.WriteString(w, fullPage)
+			return
+		}
+		_, _ = io.WriteString(w, `[{"latitude":"50","longitude":"14","timestamp":1791446460,"tracker_id":"iphone"}]`)
+	}))
+	defer server.Close()
+
+	points, err := New(server.URL, "secret", discardLogger()).Points(context.Background(), time.Now(), time.Now())
+	if err != nil {
+		t.Fatalf("Points: %v", err)
+	}
+	if len(points) != pointsPerPage+1 || requests.Load() != 2 {
+		t.Errorf("points = %d over %d requests, want %d over 2", len(points), requests.Load(), pointsPerPage+1)
+	}
+}
+
+func TestPointsReportsRejectedRead(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, "wrong", discardLogger()).Points(context.Background(), time.Now(), time.Now())
+	if err == nil || !strings.Contains(err.Error(), "401") {
+		t.Errorf("err = %v, want the 401", err)
+	}
+}

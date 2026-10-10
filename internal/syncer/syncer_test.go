@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LukStankovic/teslamate-dawarich/internal/dawarich"
+	"github.com/LukStankovic/teslamate-dawarich/internal/presence"
 	"github.com/LukStankovic/teslamate-dawarich/internal/state"
 	"github.com/LukStankovic/teslamate-dawarich/internal/teslamate"
 )
@@ -404,5 +405,121 @@ func TestRestartDoesNotResendWhatTheCheckpointRecorded(t *testing.T) {
 	}
 	if synced != 0 {
 		t.Errorf("synced = %d, want 0: the checkpoint already lists these positions", synced)
+	}
+}
+
+type fakeGate struct {
+	mu       sync.Mutex
+	verdicts map[int64]presence.Verdict
+}
+
+func (f *fakeGate) Verdict(_ context.Context, driveID int64) (presence.Verdict, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.verdicts[driveID], nil
+}
+
+func (f *fakeGate) decide(driveID int64, verdict presence.Verdict) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.verdicts[driveID] = verdict
+}
+
+func onDrive(positions []teslamate.Position, driveID int64) []teslamate.Position {
+	for i := range positions {
+		positions[i].DriveID = &driveID
+	}
+	return positions
+}
+
+func sentTimestamps(sink *fakeSink) []time.Time {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+
+	var sent []time.Time
+	for _, batch := range sink.batches {
+		for _, point := range batch {
+			sent = append(sent, point.Timestamp)
+		}
+	}
+	return sent
+}
+
+func datesOf(positions []teslamate.Position) []time.Time {
+	dates := make([]time.Time, 0, len(positions))
+	for _, position := range positions {
+		dates = append(dates, position.Date)
+	}
+	return dates
+}
+
+func TestSyncOnceSkipsDrivesTheOwnerWasNotOn(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, time.October, 8, 8, 0, 0, 0, time.UTC)
+	positions := positionsEverySecond(4, start)
+	onDrive(positions[:2], 1)
+	onDrive(positions[2:], 2)
+	gate := &fakeGate{verdicts: map[int64]presence.Verdict{1: presence.Absent, 2: presence.Present}}
+	sink := &fakeSink{}
+	cursor := cursorAt(start.Add(-time.Second))
+
+	synced, err := newTestSyncer(&fakeSource{positions: positions}, sink, cursor,
+		Options{BatchSize: 10, Presence: gate}).SyncOnce(context.Background())
+	if err != nil {
+		t.Fatalf("SyncOnce: %v", err)
+	}
+	if want := datesOf(positions[2:]); synced != 2 || !slices.Equal(sentTimestamps(sink), want) {
+		t.Errorf("sent %v, want only the second drive %v", sentTimestamps(sink), want)
+	}
+	if at, _ := cursor.state(); !at.Equal(positions[3].Date) {
+		t.Errorf("cursor = %v, want past the skipped drive at %v", at, positions[3].Date)
+	}
+}
+
+func TestSyncOnceHoldsAPendingDriveUntilItIsDecided(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, time.October, 8, 8, 0, 0, 0, time.UTC)
+	positions := positionsEverySecond(4, start)
+	onDrive(positions[2:], 9)
+	gate := &fakeGate{verdicts: map[int64]presence.Verdict{}}
+	sink := &fakeSink{}
+	cursor := cursorAt(start.Add(-time.Second))
+	syncer := newTestSyncer(&fakeSource{positions: positions}, sink, cursor,
+		Options{BatchSize: 10, OverlapWindow: time.Minute, Presence: gate})
+
+	if _, err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("first SyncOnce: %v", err)
+	}
+	if want := datesOf(positions[:2]); !slices.Equal(sentTimestamps(sink), want) {
+		t.Fatalf("sent %v while the drive was pending, want the parked positions %v", sentTimestamps(sink), want)
+	}
+	if at, _ := cursor.state(); !at.Equal(positions[1].Date) {
+		t.Errorf("cursor = %v, want held before the pending drive at %v", at, positions[1].Date)
+	}
+
+	gate.decide(9, presence.Present)
+	if _, err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("second SyncOnce: %v", err)
+	}
+	if want := datesOf(positions); !slices.Equal(sentTimestamps(sink), want) {
+		t.Errorf("sent %v once decided, want %v", sentTimestamps(sink), want)
+	}
+}
+
+func TestSyncOnceSavesNoCursorWhenThePassStartsOnAPendingDrive(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, time.October, 8, 8, 0, 0, 0, time.UTC)
+	cursor := cursorAt(start.Add(-time.Second))
+	syncer := newTestSyncer(&fakeSource{positions: onDrive(positionsEverySecond(3, start), 9)}, &fakeSink{}, cursor,
+		Options{BatchSize: 10, Presence: &fakeGate{verdicts: map[int64]presence.Verdict{}}})
+
+	if _, err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("SyncOnce: %v", err)
+	}
+	if _, saves := cursor.state(); saves != 0 {
+		t.Errorf("cursor saved %d times, want 0", saves)
 	}
 }

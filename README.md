@@ -10,6 +10,7 @@ cursor file.
 - [How it works](#how-it-works)
 - [Setup](#setup) — [reaching Dawarich](#reaching-dawarich), [HTTPS](#if-dawarich-forces-https), [API key](#where-the-api-key-lives)
 - [Choosing what gets synced](#choosing-what-gets-synced) — from now on, from a date, or the whole history
+- [Skipping drives you were not on](#skipping-drives-you-were-not-on) — when someone else drives the car
 - [Checking that it works](#checking-that-it-works)
 - [Configuration](#configuration) and [flags](#flags)
 - [What ends up in Dawarich](#what-ends-up-in-dawarich)
@@ -239,6 +240,77 @@ coordinates and timestamps, so those points do not deduplicate against these
 ones. Keep the GPX only if it covers a period TeslaMate never recorded, and then
 start the backfill after that date with `-from`.
 
+## Skipping drives you were not on
+
+Neither TeslaMate nor the Tesla API says who is driving: there is no driver
+profile in the Owner API, in TeslaMate's MQTT topics or in Fleet Telemetry. So
+the car alone cannot tell your drive from a borrowed one. Your phone can.
+
+Configure one or both of the sources below and the check turns itself on. Each
+drive is then held until it has ended and `PRESENCE_SETTLE` (15 minutes) has
+passed, and only then synced or skipped. Home Assistant is asked first, your
+phone in Dawarich second; the first one that knows decides.
+
+### Home Assistant, if you have it
+
+The most precise signal is your phone being connected to the car over
+Bluetooth. Point the daemon at any entity that is `on` while you are in the car:
+
+```yaml
+      PRESENCE_HA_URL: http://homeassistant:8123
+      PRESENCE_HA_TOKEN: your_long_lived_access_token
+      PRESENCE_HA_ENTITY: binary_sensor.lukas_in_tesla
+```
+
+On Android the companion app's Bluetooth connection sensor reports the car
+directly, so a template binary sensor over it is enough. iOS exposes no such
+sensor; a Shortcuts automation that turns an `input_boolean` on and off when
+the phone connects to and disconnects from the car does the same job, provided
+it is set to run without asking for confirmation. A drive counts as yours when
+the entity was `on` for at least half of it.
+
+The token comes from your Home Assistant profile → Security → Long-lived access
+tokens. Home Assistant keeps history for 10 days by default, so older drives in
+a backfill fall through to the next source.
+
+### Your phone in Dawarich
+
+If your phone app (the Dawarich app, OwnTracks, Overland) already sends its
+location to Dawarich, name its tracker:
+
+```yaml
+      PRESENCE_TRACKER_ID: iphone
+```
+
+The daemon reads that tracker's points recorded during the drive and compares
+them with the car's route. When at least half of them lie within
+`PRESENCE_RADIUS` (500 m) of the car at that moment, you were in it. The
+tracker id is whatever your phone's points carry:
+
+```sh
+curl -s "https://dawarich.example.com/api/v1/points?api_key=KEY&slim=true&per_page=20&order=desc" | jq -r '.[].tracker_id' | sort -u
+```
+
+### When neither source can tell
+
+Home Assistant may have no history for the drive, and the phone may have
+recorded nothing during it. Such a drive is skipped: tracking apps record
+movement, so a silent phone stayed where it was. If yours records too sparsely
+for that, set `PRESENCE_SYNC_UNKNOWN=true` and such drives are synced instead.
+
+A source that cannot be reached does not count as silent: unless the other one
+decides, the drive is held and checked again on the next pass.
+
+Every decision is logged as `drive checked for presence` with the verdict and
+the source that made it.
+
+### What it costs
+
+Drives reach Dawarich after they end, not live, and anything queued behind a
+held drive — another car, parked positions — waits with it. The check covers
+drive positions only; with `DRIVES_ONLY=false` the parked positions at the
+borrower's destination are still synced.
+
 ## Checking that it works
 
 ```sh
@@ -299,6 +371,13 @@ something did not arrive.
 | `DRIVES_ONLY` | `true` | `false` also syncs parked and charging positions |
 | `CAR_IDS` | all | Comma-separated TeslaMate car ids |
 | `TRACKER_PREFIX` | — | Prepended to the car name to form Dawarich's `tracker_id` |
+| `PRESENCE_SETTLE` | `15m` | How long after a drive ends to wait before deciding |
+| `PRESENCE_SYNC_UNKNOWN` | `false` | Sync drives no source could decide |
+| `PRESENCE_HA_URL` | — | Home Assistant base URL, see [above](#skipping-drives-you-were-not-on) |
+| `PRESENCE_HA_TOKEN` | — | Home Assistant long-lived access token |
+| `PRESENCE_HA_ENTITY` | — | Entity that is `on` while you are in the car |
+| `PRESENCE_TRACKER_ID` | — | Dawarich `tracker_id` of your phone, see [above](#skipping-drives-you-were-not-on) |
+| `PRESENCE_RADIUS` | `500` | Meters between phone and car that still count as together |
 | `MQTT_HOST` | — | Set to enable nudging; unset disables MQTT entirely |
 | `MQTT_PORT` | `1883` | `8883` when `MQTT_TLS=true` and no port is given |
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | — | Broker credentials |

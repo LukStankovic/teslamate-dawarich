@@ -117,3 +117,66 @@ func TestLoadCarIDs(t *testing.T) {
 		t.Errorf("CarIDs = %v, want [1 3]", cfg.CarIDs)
 	}
 }
+
+func TestLoadPresenceIsOffWithoutASource(t *testing.T) {
+	setRequired(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Presence.Enabled() {
+		t.Errorf("Presence = %+v, want it off when no source is configured", cfg.Presence)
+	}
+}
+
+func TestLoadPresenceFromPhoneTracker(t *testing.T) {
+	setRequired(t)
+	t.Setenv("PRESENCE_TRACKER_ID", "iphone")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := Presence{TrackerID: "iphone", RadiusMeters: 500, SettleDelay: 15 * time.Minute}
+	if cfg.Presence != want || !cfg.Presence.Enabled() {
+		t.Errorf("Presence = %+v, want %+v and enabled", cfg.Presence, want)
+	}
+}
+
+func TestLoadPresenceFromHomeAssistant(t *testing.T) {
+	setRequired(t)
+	t.Setenv("PRESENCE_HA_URL", "http://homeassistant:8123/")
+	t.Setenv("PRESENCE_HA_TOKEN", "token")
+	t.Setenv("PRESENCE_HA_ENTITY", "binary_sensor.in_tesla")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := HomeAssistant{URL: "http://homeassistant:8123", Token: "token", EntityID: "binary_sensor.in_tesla"}
+	if cfg.Presence.HomeAssistant != want || !cfg.Presence.Enabled() {
+		t.Errorf("HomeAssistant = %+v, want %+v and enabled", cfg.Presence.HomeAssistant, want)
+	}
+}
+
+func TestLoadRejectsBadPresenceValues(t *testing.T) {
+	tests := map[string]struct{ key, value string }{
+		"zero radius":        {"PRESENCE_RADIUS", "0"},
+		"radius with unit":   {"PRESENCE_RADIUS", "500m"},
+		"negative settle":    {"PRESENCE_SETTLE", "-1m"},
+		"non-boolean switch": {"PRESENCE_SYNC_UNKNOWN", "maybe"},
+		"entity without url": {"PRESENCE_HA_ENTITY", "binary_sensor.in_tesla"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv(tc.key, tc.value)
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load succeeded with %s=%q, want an error", tc.key, tc.value)
+			}
+		})
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/LukStankovic/teslamate-dawarich/internal/dawarich"
+	"github.com/LukStankovic/teslamate-dawarich/internal/presence"
 	"github.com/LukStankovic/teslamate-dawarich/internal/state"
 	"github.com/LukStankovic/teslamate-dawarich/internal/teslamate"
 )
@@ -26,6 +27,10 @@ type Cursor interface {
 	Save(checkpoint state.Checkpoint) error
 }
 
+type PresenceGate interface {
+	Verdict(ctx context.Context, driveID int64) (presence.Verdict, error)
+}
+
 type Options struct {
 	PollInterval    time.Duration
 	OverlapWindow   time.Duration
@@ -34,6 +39,7 @@ type Options struct {
 	DrivesOnly      bool
 	CarIDs          []int32
 	TrackerPrefix   string
+	Presence        PresenceGate
 }
 
 const progressLogStep = 10_000
@@ -109,7 +115,12 @@ func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
 			return sent, nil
 		}
 
-		unsent := s.unsentPositions(positions)
+		allowed, decided, err := s.screenByPresence(ctx, positions)
+		if err != nil {
+			return sent, err
+		}
+
+		unsent := s.unsentPositions(allowed)
 		points := make([]dawarich.Point, 0, len(unsent))
 		for _, position := range unsent {
 			points = append(points, toPoint(position, s.opts.TrackerPrefix))
@@ -122,7 +133,10 @@ func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
 			sent += len(points)
 		}
 
-		last := positions[len(positions)-1]
+		if decided == 0 {
+			return sent, nil
+		}
+		last := positions[decided-1]
 		if err := s.saveCheckpoint(last.Date); err != nil {
 			return sent, err
 		}
@@ -134,11 +148,38 @@ func (s *Syncer) SyncOnce(ctx context.Context) (int, error) {
 			s.logger.Info("sync in progress", "points", sent, "through", last.Date)
 		}
 
-		if len(positions) < s.opts.BatchSize {
+		if decided < len(positions) || len(positions) < s.opts.BatchSize {
 			return sent, nil
 		}
 		page.After, page.AfterID = last.Date, last.ID
 	}
+}
+
+func (s *Syncer) screenByPresence(ctx context.Context, positions []teslamate.Position) ([]teslamate.Position, int, error) {
+	if s.opts.Presence == nil {
+		return positions, len(positions), nil
+	}
+
+	allowed := make([]teslamate.Position, 0, len(positions))
+	for i, position := range positions {
+		if position.DriveID == nil {
+			allowed = append(allowed, position)
+			continue
+		}
+
+		verdict, err := s.opts.Presence.Verdict(ctx, *position.DriveID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("check presence on drive %d: %w", *position.DriveID, err)
+		}
+		switch verdict {
+		case presence.Pending:
+			s.logger.Debug("waiting for drive to settle", "drive_id", *position.DriveID)
+			return allowed, i, nil
+		case presence.Present:
+			allowed = append(allowed, position)
+		}
+	}
+	return allowed, len(positions), nil
 }
 
 func (s *Syncer) saveCheckpoint(at time.Time) error {
