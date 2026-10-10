@@ -114,3 +114,54 @@ func (s *Store) Positions(ctx context.Context, query Query) ([]Position, error) 
 	}
 	return positions, nil
 }
+
+type Drive struct {
+	ID        int64
+	StartedAt time.Time
+	EndedAt   *time.Time
+}
+
+type RoutePoint struct {
+	At        time.Time
+	Latitude  float64
+	Longitude float64
+}
+
+func (s *Store) Drive(ctx context.Context, id int64) (Drive, error) {
+	drive := Drive{ID: id}
+	err := s.pool.QueryRow(ctx, `SELECT start_date, end_date FROM drives WHERE id = $1`, id).
+		Scan(&drive.StartedAt, &drive.EndedAt)
+	if err != nil {
+		return Drive{}, fmt.Errorf("query drive %d: %w", id, err)
+	}
+	return drive, nil
+}
+
+const driveRouteSQL = `
+SELECT date, latitude::float8, longitude::float8
+FROM positions
+WHERE drive_id = $1
+  AND latitude IS NOT NULL
+  AND longitude IS NOT NULL
+ORDER BY date, id`
+
+func (s *Store) DriveRoute(ctx context.Context, id int64) ([]RoutePoint, error) {
+	rows, err := s.pool.Query(ctx, driveRouteSQL, id)
+	if err != nil {
+		return nil, fmt.Errorf("query route of drive %d: %w", id, err)
+	}
+	defer rows.Close()
+
+	var route []RoutePoint
+	for rows.Next() {
+		var point RoutePoint
+		if err := rows.Scan(&point.At, &point.Latitude, &point.Longitude); err != nil {
+			return nil, fmt.Errorf("scan route point: %w", err)
+		}
+		route = append(route, point)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read route of drive %d: %w", id, err)
+	}
+	return route, nil
+}

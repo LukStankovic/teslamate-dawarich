@@ -15,7 +15,9 @@ import (
 
 	"github.com/LukStankovic/teslamate-dawarich/internal/config"
 	"github.com/LukStankovic/teslamate-dawarich/internal/dawarich"
+	"github.com/LukStankovic/teslamate-dawarich/internal/homeassistant"
 	"github.com/LukStankovic/teslamate-dawarich/internal/mqtt"
+	"github.com/LukStankovic/teslamate-dawarich/internal/presence"
 	"github.com/LukStankovic/teslamate-dawarich/internal/state"
 	"github.com/LukStankovic/teslamate-dawarich/internal/syncer"
 	"github.com/LukStankovic/teslamate-dawarich/internal/teslamate"
@@ -64,6 +66,7 @@ func run() error {
 		"drives_only", cfg.DrivesOnly,
 		"car_ids", cfg.CarIDs,
 		"mqtt_nudge", cfg.MQTT.Enabled,
+		"presence_check", cfg.Presence.Enabled(),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -91,6 +94,7 @@ func run() error {
 		DrivesOnly:      cfg.DrivesOnly,
 		CarIDs:          cfg.CarIDs,
 		TrackerPrefix:   cfg.TrackerPrefix,
+		Presence:        presenceGate(cfg, store, client, logger),
 	}, logger)
 
 	if *once {
@@ -112,6 +116,33 @@ func run() error {
 	err = sync.Run(ctx, nudge)
 	logger.Info("stopped")
 	return err
+}
+
+func presenceGate(cfg config.Config, store *teslamate.Store, client *dawarich.Client, logger *slog.Logger) syncer.PresenceGate {
+	if !cfg.Presence.Enabled() {
+		return nil
+	}
+
+	var signals []presence.Signal
+	if ha := cfg.Presence.HomeAssistant; ha.Enabled() {
+		signals = append(signals, presence.NewEntitySignal(homeassistant.New(ha.URL, ha.Token), ha.EntityID))
+	}
+	if cfg.Presence.TrackerID != "" {
+		signals = append(signals, presence.NewPhoneSignal(store, client,
+			cfg.Presence.TrackerID, float64(cfg.Presence.RadiusMeters)))
+	}
+
+	logger.Info("presence check enabled",
+		"home_assistant_entity", cfg.Presence.HomeAssistant.EntityID,
+		"phone_tracker", cfg.Presence.TrackerID,
+		"radius_m", cfg.Presence.RadiusMeters,
+		"settle", cfg.Presence.SettleDelay,
+		"sync_unknown", cfg.Presence.SyncWhenUnknown,
+	)
+	return presence.NewChecker(store, signals, presence.Options{
+		SettleDelay:     cfg.Presence.SettleDelay,
+		SyncWhenUnknown: cfg.Presence.SyncWhenUnknown,
+	}, logger)
 }
 
 func startNudger(cfg config.Config, logger *slog.Logger) (<-chan struct{}, func(), error) {

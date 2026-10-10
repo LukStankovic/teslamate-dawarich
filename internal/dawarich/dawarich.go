@@ -130,15 +130,11 @@ func (c *Client) SendPoints(ctx context.Context, points []Point) error {
 }
 
 func (c *Client) post(ctx context.Context, endpoint string, body []byte) (retryAfter time.Duration, err error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	request, err := c.newRequest(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return 0, permanentError{fmt.Errorf("build request: %w", err)}
+		return 0, permanentError{err}
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.apiKey)
-	if c.forwardedProto != "" {
-		request.Header.Set("X-Forwarded-Proto", c.forwardedProto)
-	}
 
 	response, err := c.http.Do(request)
 	if err != nil {
@@ -161,6 +157,18 @@ func (c *Client) post(ctx context.Context, endpoint string, body []byte) (retryA
 	default:
 		return 0, permanentError{fmt.Errorf("dawarich returned %s: %s", response.Status, errorSnippet(response.Body))}
 	}
+}
+
+func (c *Client) newRequest(ctx context.Context, method, endpoint string, body io.Reader) (*http.Request, error) {
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.forwardedProto != "" {
+		request.Header.Set("X-Forwarded-Proto", c.forwardedProto)
+	}
+	return request, nil
 }
 
 var errRedirected = errors.New(
