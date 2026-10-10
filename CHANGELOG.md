@@ -5,6 +5,17 @@ See the [GitHub Releases](https://github.com/LukStankovic/teslamate-dawarich/rel
 
 <!-- new releases inserted below this line -->
 
+## v0.2.1 — 2026-10-10
+
+Presence check: a drive with no phone points now waits for the phone to upload (up to , 6h by default) instead of being skipped right away.
+
+## What's Changed
+* Wait for a phone that has not uploaded yet by @LukStankovic in https://github.com/LukStankovic/teslamate-dawarich/pull/2
+
+
+**Full Changelog**: https://github.com/LukStankovic/teslamate-dawarich/compare/v0.2.0...v0.2.1
+
+
 ## v0.2.0 — 2026-10-10
 
 Optionally skip drives you were not on, using a Home Assistant entity (e.g. phone Bluetooth connected to the car) or your phone's tracker in Dawarich. Off unless configured. Built with Go 1.27.
