@@ -5,6 +5,19 @@ See the [GitHub Releases](https://github.com/LukStankovic/teslamate-dawarich/rel
 
 <!-- new releases inserted below this line -->
 
+## v0.2.2 — 2026-10-25
+
+Maintenance release, no behaviour change. Built with Go 1.27.3, which fixes security issues in `crypto/x509`, and with updated dependencies (pgx 5.11.0, paho.mqtt.golang 1.5.1).
+
+
+## What's Changed
+* build: move to Go 1.27.3, cover a historical backfill by @LukStankovic in https://github.com/LukStankovic/teslamate-dawarich/pull/3
+* build: update dependencies by @LukStankovic in https://github.com/LukStankovic/teslamate-dawarich/pull/4
+
+
+**Full Changelog**: https://github.com/LukStankovic/teslamate-dawarich/compare/v0.2.1...v0.2.2
+
+
 ## v0.2.1 — 2026-10-10
 
 Presence check: a drive with no phone points now waits for the phone to upload (up to , 6h by default) instead of being skipped right away.
